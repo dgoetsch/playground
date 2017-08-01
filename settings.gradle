@@ -1,0 +1,2 @@
+include 'cassandra', 'event-log', 'web-socket'
+rootProject.name = "dev-tools"

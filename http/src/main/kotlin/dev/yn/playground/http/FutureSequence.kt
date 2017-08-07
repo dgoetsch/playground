@@ -63,6 +63,14 @@ class FutureSequence<T>(val futures: List<Future<T>>): Future<List<T>>, Handler<
 
     companion object {
         fun <T> noHandler(): Handler<AsyncResult<List<T>>> = Handler { }
+
+        fun <T> lift(futures: List<Future<List<T>>>): Future<List<T>> {
+            return futures.fold(Future.succeededFuture(emptyList<T>()), { future: Future<List<T>>, next: Future<List<T>> ->
+                future.compose { agg ->
+                    next.map { agg + it }
+                }
+            })
+        }
     }
 
     private fun setComplete(): Handler<AsyncResult<List<T>>>? {

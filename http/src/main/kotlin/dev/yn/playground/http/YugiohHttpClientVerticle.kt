@@ -2,15 +2,14 @@ package dev.yn.playground.http
 
 import io.vertx.core.AbstractVerticle
 import io.vertx.core.Future
-import io.vertx.core.Handler
 import io.vertx.core.buffer.Buffer
 import io.vertx.core.http.*
 import io.vertx.core.json.JsonArray
 import io.vertx.core.json.JsonObject
 import io.vertx.core.logging.LoggerFactory
-import org.funktionale.either.Either
-import java.net.URLEncoder
-import dev.yn.util.either.*
+import io.vertx.core.CompositeFuture
+import io.vertx.core.file.FileSystem
+
 data class HttpClientConfig(
         val host: String,
         val port: Int? = 443,
@@ -30,37 +29,96 @@ class YugiohHttpClientVerticle(val config: HttpClientConfig): AbstractVerticle()
     override fun start() {
         val client = vertx.createHttpClient(HttpClientOptions().setSsl(config.ssl))
         val yugiohClient = YuGiOhClientRequests(client, config)
-        val fileSystem = vertx.fileSystem()
-        fileSystem.mkdirBlocking("sets/")
-        fileSystem.mkdirBlocking("cards/")
-        yugiohClient.getSets()
-                .map {
-                    it.map {
-                        when(it) {
-                            is String -> Either.right(it)
-                            else -> Either.left(ClientError.ParseError("could not handle set name", it))
-                        }
-                    }
-                }
 
-//        yugiohClient.getSets({ setName ->
-//            fileSystem.mkdir("sets/$setName", { it -> it.map {
-//                fileSystem.mkdir("cards/$setName", { it -> it.map {
-//                        yugiohClient.getSetData(setName, { card ->
-//                            card.getString("name")?.let { cardName ->
-//                                fileSystem.writeFile(
-//                                        "sets/$setName/$cardName", card.toBuffer(),
-//                                        { LOG.info("wrote file: sets/$setName/$cardName") })
-//                                yugiohClient.getCardData(cardName, {
-//                                    println(cardName)
-//                                })
-//                            }
+        yugiohClient.getSets()
+                .compose { setNames ->
+                    FutureSequence(setNames.take(10).map { setName ->
+                        when (setName) {
+                            is String -> yugiohClient.getSetData(setName)
+                            else -> ClientError.failedFuture<JsonObject>(ClientError.ParseError("could not handle set name", setName))
+                        } }) }
+                .map{it -> println(it)}
+                .recover { it ->
+                    println(it)
+                    Future.failedFuture("failed")
+                }
+//        val fileSystem = vertx.fileSystem()
+//        fileSystem.mkdirBlocking("sets/")
+//        fileSystem.mkdirBlocking("cards/")
 //
-//                        })
-//                    }
-//                })
-//            }})
-//        })
+//        val fileService = FileService(fileSystem)
+//        val service = YuGiOhPricesService(fileService, yugiohClient)
+
+//        yugiohClient.getSets()
+//                .compose { setNames -> processSetNames(setNames, service::cacheSetData) }
+    }
+
+
+    fun <T> processSetNames(setNames: JsonArray, doWithSetName: (String) -> Future<T>): CompositeFuture =
+            CompositeFuture.all(setNames.map { setName ->
+                when (setName) {
+                    is String -> doWithSetName(setName)
+                    else -> ClientError.failedFuture<String>(ClientError.ParseError("could not handle set name", setName))
+                }
+            })
+
+    fun <T> processSetNamesB(setNames: JsonArray, doWithSetName: (String) -> Future<T>): FutureSequence<T> =
+            FutureSequence(setNames.map { setName ->
+                when (setName) {
+                    is String -> doWithSetName(setName)
+                    else -> ClientError.failedFuture<T>(ClientError.ParseError("could not handle set name", setName))
+                }
+            })
+
+}
+
+class YuGiOhPricesService(val fileService: FileService, val yuGiOhClientRequests: YuGiOhClientRequests) {
+    fun cacheSetData(setName: String): Future<CompositeFuture> {
+        return yuGiOhClientRequests.getSetData(setName)
+                .compose(fileService.makeDirectors(listOf("sets/$setName", "cards/$setName")))
+                .compose { setData -> processSetData(setData, { setCardData ->
+                    fileService.writeFile<JsonObject>("sets/$setName/${setCardData.getString("name")}.json", setCardData.toBuffer(), setCardData)
+                            .compose { setCardData -> setCardData.getString("name")?.let(yuGiOhClientRequests::getCardData)?:ClientError.failedFuture(ClientError.ParseError("Expected 'name' field", setCardData)) }
+                            .compose { cardData -> cardData.getString("name")?.let { fileService.writeFile("cards/$setName/$it.json", cardData.toBuffer(), cardData) } }
+                }) }
+    }
+
+    fun <T> processSetData(setData: JsonObject, doWithCard: (JsonObject) -> Future<T>): Future<CompositeFuture> =
+            when (setData.getString("status")) {
+                "success" ->
+                    CompositeFuture.all(setData
+                            .getJsonObject("data")
+                            ?.getJsonArray("cards")
+                            ?.map {
+                                when (it) {
+                                    is JsonObject -> doWithCard(it)
+                                    else -> ClientError.failedFuture<Unit>(ClientError.ParseError("card is not an object", it))
+                                }
+                            }) ?:ClientError.failedFuture<CompositeFuture>(ClientError.ParseError("could not parse set data", setData))
+                else -> ClientError.failedFuture<CompositeFuture>(ClientError.ErrorResponse("response status was not a success", setData))
+            }
+}
+class FileService(val fileSystem: FileSystem) {
+    val LOG = LoggerFactory.getLogger(this.javaClass)
+
+    fun <T> makeDirectors(dirs: List<String>): (T) -> Future<T> = { input ->
+        CompositeFuture.all(dirs.map { dir ->
+            val future = Future.future<Void>()
+            fileSystem.mkdir(dir, future.completer())
+            future.map {
+                LOG.info("created directory: $dir")
+                it
+            }
+        }).map { input }
+    }
+
+    fun <T> writeFile(fileName: String, buffer: Buffer, result: T): Future<T> {
+        val future = Future.future<Void>()
+        fileSystem.writeFile(fileName, buffer, future.completer())
+        return future.map {
+            LOG.info("wrote file: $fileName")
+            result
+        }
     }
 }
 
@@ -90,6 +148,8 @@ sealed class ClientError {
         }
 
         fun <T> futureHandler(future: Future<T>): (ClientError) -> Unit = { future.fail(Wrapper(it)) }
+
+        fun <T> failedFuture(clientError: ClientError): Future<T> = Future.failedFuture<T>(Wrapper(clientError))
     }
     class ParseError(val message: String, val body: Any): ClientError()
     class ErrorResponse(val message: String, val body: Any): ClientError()

@@ -1,4 +1,4 @@
-package dev.yn.tools.web.socket
+package dev.yn.playground.web.socket
 
 import io.vertx.core.AbstractVerticle
 import io.vertx.core.Future

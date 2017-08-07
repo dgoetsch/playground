@@ -31,7 +31,7 @@ allprojects {
   }
 
   dependencies {
-
+    compile group: 'org.apache.commons', name: 'commons-lang3', version: '3.6'
     compile "org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion"
 
     compile "io.vertx:vertx-core:$vertxVersion"
@@ -40,7 +40,6 @@ allprojects {
     compile "org.funktionale:funktionale-all:1.0.0-final"
 
     compile 'com.natpryce:konfig:1.5.0.0'
-    compile "org.slf4j:slf4j-api:1.7.23"
 
 
     testCompile 'io.kotlintest:kotlintest:2.0.0'

@@ -1,2 +1,2 @@
-include 'cassandra', 'event-log', 'web-socket'
-rootProject.name = "dev-tools"
+include 'cassandra', 'event-log', 'web-socket', 'http'
+rootProject.name = "playground"

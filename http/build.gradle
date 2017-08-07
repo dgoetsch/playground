@@ -1,0 +1,7 @@
+apply plugin: "application"
+
+mainClassName = "dev.yn.playground.http.AppKt"
+
+dependencies {
+    compile project(':event-log')
+}
